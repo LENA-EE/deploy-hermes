@@ -1,0 +1,11 @@
+# /etc/systemd/system/hermes.slice
+# Общий потолок на ВСЕХ агентов вместе: сколько бы коллег ни было,
+# контейнер (8 ГБ / 4 CPU) остаётся живым, соседи не страдают.
+[Unit]
+Description=Hermes agents (all users)
+
+[Slice]
+MemoryHigh=4500M
+MemoryMax=5G
+CPUQuota=300%
+TasksMax=1024

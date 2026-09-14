@@ -1,0 +1,62 @@
+# /etc/systemd/system/hermes-dashboard@.service
+# Шаблон: hermes-dashboard@ivanov  →  процесс от hermes-ivanov,
+# память /home/hermes-ivanov/.hermes, рабочая папка /srv/hermes/ivanov.
+[Unit]
+Description=Hermes dashboard for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes-%i
+Group=hermes-%i
+Slice=hermes.slice
+EnvironmentFile=/etc/hermes/users/%i.conf
+Environment=HOME=/home/hermes-%i
+WorkingDirectory=/srv/hermes/%i
+ExecStart=/usr/local/bin/hermes-run dashboard --host 127.0.0.1 --port ${PORT} --no-open --skip-build
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+# --- лимиты одного человека (общий потолок — в hermes.slice) ---
+MemoryHigh=1200M
+MemoryMax=1500M
+CPUQuota=150%
+TasksMax=256
+
+# --- права: никаких повышений ---
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+# --- файловая система: процесс ВИДИТ только своё ---
+ProtectSystem=strict
+PrivateTmp=true
+PrivateDevices=true
+# /home целиком подменяется пустым tmpfs, внутрь пробрасывается только свой хомяк:
+# чужих хомяков (коллег, администратора) для процесса просто не существует
+ProtectHome=tmpfs
+BindPaths=/home/hermes-%i
+# то же для рабочих папок
+TemporaryFileSystem=/srv/hermes:ro
+BindPaths=/srv/hermes/%i
+ReadWritePaths=/home/hermes-%i /srv/hermes/%i
+InaccessiblePaths=-/opt/hermes/.install-home -/etc/hermes/model.env -/etc/nginx
+# чужие процессы и их командные строки не видны
+ProtectProc=invisible
+ProcSubset=pid
+
+[Install]
+WantedBy=multi-user.target

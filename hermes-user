@@ -1,0 +1,229 @@
+#!/bin/bash
+# /usr/local/sbin/hermes-user — заведение и удаление пользователей Hermes.
+#
+#   hermes-user add <имя>        завести коллегу (учётка, память, веб-пароль, запуск)
+#   hermes-user passwd <имя>     сменить веб-пароль
+#   hermes-user disable <имя>    остановить и закрыть вход (данные остаются)
+#   hermes-user purge <имя>      удалить полностью, включая память и рабочую папку
+#   hermes-user list             кто заведён, порты, статус
+#   hermes-user regen            перегенерировать nginx-map и правила nftables
+#
+# Запускать от root. Имя: латиница в нижнем регистре и цифры, 2–20 символов.
+set -euo pipefail
+umask 077
+
+CONF_DIR=/etc/hermes
+USERS_DIR=$CONF_DIR/users
+MODEL_ENV=$CONF_DIR/model.env             # OPENAI_BASE_URL, OPENAI_API_KEY, MODEL, SSL_* — root:root 600
+CONFIG_TEMPLATE=$CONF_DIR/config.template.yaml
+WORK_ROOT=/srv/hermes
+HTPASSWD=/etc/nginx/hermes.htpasswd
+NGINX_MAP=/etc/nginx/hermes-users.map
+NFT_FILE=/etc/nftables.d/hermes.nft
+PORT_FIRST=9121
+PORT_LAST=9199
+
+die()  { echo "hermes-user: $*" >&2; exit 1; }
+info() { echo "==> $*"; }
+
+[ "$(id -u)" -eq 0 ] || die "запускать от root"
+
+valid_name() {
+  [[ "$1" =~ ^[a-z][a-z0-9]{1,19}$ ]] || die "некорректное имя '$1' (a-z, 0-9, 2–20 символов, с буквы)"
+}
+
+nginx_user() {
+  local u
+  for u in www-data nginx; do
+    id "$u" >/dev/null 2>&1 && { echo "$u"; return 0; }
+  done
+  return 1
+}
+
+next_port() {
+  local p used
+  used=$(cat "$USERS_DIR"/*.conf 2>/dev/null | sed -n 's/^PORT=//p' || true)
+  for ((p = PORT_FIRST; p <= PORT_LAST; p++)); do
+    grep -qx "$p" <<<"$used" && continue
+    ss -Htln "sport = :$p" | grep -q . && continue
+    echo "$p"; return 0
+  done
+  die "свободные порты $PORT_FIRST–$PORT_LAST закончились"
+}
+
+set_web_password() {
+  local name=$1 pass pass2 hash web
+  command -v openssl >/dev/null || die "нет openssl — нечем захешировать пароль"
+  read -rsp "Веб-пароль для $name: " pass; echo
+  read -rsp "Повторить: " pass2; echo
+  [ "$pass" = "$pass2" ] || die "пароли не совпали"
+  [ "${#pass}" -ge 12 ] || die "пароль короче 12 символов"
+  hash=$(openssl passwd -apr1 -stdin <<<"$pass")
+  unset pass pass2
+
+  mkdir -p "$(dirname "$HTPASSWD")"
+  touch "$HTPASSWD"
+  sed -i "/^${name}:/d" "$HTPASSWD"
+  echo "${name}:${hash}" >>"$HTPASSWD"
+  if web=$(nginx_user); then
+    chown "root:$(id -gn "$web")" "$HTPASSWD"; chmod 640 "$HTPASSWD"
+  fi
+}
+
+regen() {
+  info "генерирую $NGINX_MAP и $NFT_FILE"
+  mkdir -p "$(dirname "$NGINX_MAP")" "$(dirname "$NFT_FILE")"
+
+  local f name port uid web web_uid rules=""
+  : >"$NGINX_MAP.tmp"
+  web_uid=""
+  if web=$(nginx_user); then web_uid=$(id -u "$web"); fi
+
+  for f in "$USERS_DIR"/*.conf; do
+    [ -e "$f" ] || continue
+    name=$(basename "$f" .conf)
+    port=$(sed -n 's/^PORT=//p' "$f")
+    grep -qx 'ENABLED=yes' "$f" || continue
+    uid=$(id -u "hermes-$name")
+    echo "    $name $port;" >>"$NGINX_MAP.tmp"
+    # к порту дашборда могут подключаться только: root, nginx и сам владелец.
+    # Агент Петрова не достучится до дашборда Иванова даже через 127.0.0.1.
+    rules+="        oifname \"lo\" tcp dport $port meta skuid != { 0${web_uid:+, $web_uid}, $uid } counter reject"$'\n'
+  done
+  chmod 644 "$NGINX_MAP.tmp"; mv "$NGINX_MAP.tmp" "$NGINX_MAP"
+
+  cat >"$NFT_FILE.tmp" <<EOF
+# генерируется hermes-user — руками не править
+table inet hermes_dash {}
+delete table inet hermes_dash
+table inet hermes_dash {
+    chain output {
+        type filter hook output priority 0; policy accept;
+$rules    }
+}
+EOF
+  mv "$NFT_FILE.tmp" "$NFT_FILE"
+
+  if command -v nft >/dev/null; then
+    nft -f "$NFT_FILE" || die "nft не применил правила — изоляция портов НЕ работает, разберись"
+  else
+    echo "!!  nft не установлен — изоляция портов дашбордов НЕ работает (см. план, часть 2.4)" >&2
+  fi
+  if command -v nginx >/dev/null; then
+    nginx -t -q && systemctl reload nginx || echo "!!  nginx не перезагружен, проверь nginx -t" >&2
+  fi
+}
+
+cmd_add() {
+  local name=$1 user="hermes-$1" home="/home/hermes-$1" work="$WORK_ROOT/$1" port model
+  valid_name "$name"
+  [ -r "$MODEL_ENV" ]       || die "нет $MODEL_ENV (часть 2.2 плана)"
+  [ -r "$CONFIG_TEMPLATE" ] || die "нет $CONFIG_TEMPLATE"
+  [ -e "$USERS_DIR/$name.conf" ] && die "$name уже заведён (hermes-user list)"
+
+  info "учётка $user (без sudo, без пароля, без SSH)"
+  if ! id "$user" >/dev/null 2>&1; then
+    useradd --create-home --home-dir "$home" --shell /bin/bash --user-group "$user"
+  fi
+  passwd -l "$user" >/dev/null
+  for g in sudo wheel adm docker lxd; do
+    if id -nG "$user" | tr ' ' '\n' | grep -qx "$g"; then
+      die "$user состоит в группе $g — убери руками (gpasswd -d $user $g) и повтори"
+    fi
+  done
+  chmod 700 "$home"
+  cat >>"$home/.bashrc" <<'EOF'
+
+# hermes-user: без истории команд — туда не осядут пароли
+unset HISTFILE
+HISTSIZE=0
+HISTFILESIZE=0
+EOF
+  rm -f "$home/.bash_history"
+
+  info "рабочая папка $work"
+  install -d -m 700 -o "$user" -g "$user" "$work"
+
+  info "HERMES_HOME $home/.hermes"
+  install -d -m 700 -o "$user" -g "$user" "$home/.hermes"
+  model=$(sed -n 's/^MODEL=//p' "$MODEL_ENV")
+  {
+    grep -v '^MODEL=' "$MODEL_ENV"
+    echo "HERMES_DASHBOARD_HOST=127.0.0.1"
+    echo "API_SERVER_HOST=127.0.0.1"
+    echo "HERMES_WRITE_SAFE_ROOT=$work"
+  } >"$home/.hermes/.env"
+  sed -e "s|@WORKDIR@|$work|g" -e "s|@MODEL@|$model|g" "$CONFIG_TEMPLATE" >"$home/.hermes/config.yaml"
+  chown "$user:$user" "$home/.hermes/.env" "$home/.hermes/config.yaml"
+  chmod 600 "$home/.hermes/.env" "$home/.hermes/config.yaml"
+
+  port=$(next_port)
+  install -d -m 755 "$USERS_DIR"
+  printf 'PORT=%s\nENABLED=yes\n' "$port" >"$USERS_DIR/$name.conf"
+  chmod 644 "$USERS_DIR/$name.conf"
+
+  set_web_password "$name"
+  regen
+
+  info "запуск hermes-dashboard@$name на 127.0.0.1:$port"
+  systemctl daemon-reload
+  systemctl enable --now "hermes-dashboard@$name"
+  sleep 3
+  systemctl is-active --quiet "hermes-dashboard@$name" \
+    || die "не стартовал: journalctl -u hermes-dashboard@$name -n 50"
+
+  info "готово: $name → порт $port. Проверки изоляции — часть 4 плана."
+}
+
+cmd_passwd() {
+  valid_name "$1"; [ -e "$USERS_DIR/$1.conf" ] || die "$1 не заведён"
+  set_web_password "$1"
+  info "пароль $1 обновлён"
+}
+
+cmd_disable() {
+  local name=$1
+  valid_name "$name"; [ -e "$USERS_DIR/$name.conf" ] || die "$name не заведён"
+  systemctl disable --now "hermes-dashboard@$name" || true
+  sed -i 's/^ENABLED=.*/ENABLED=no/' "$USERS_DIR/$name.conf"
+  sed -i "/^${name}:/d" "$HTPASSWD" 2>/dev/null || true
+  regen
+  info "$name отключён. Память и файлы сохранены: /home/hermes-$name, $WORK_ROOT/$name"
+}
+
+cmd_purge() {
+  local name=$1 answer
+  valid_name "$name"
+  read -rp "Удалить hermes-$name ВМЕСТЕ с памятью и файлами? Напиши имя для подтверждения: " answer
+  [ "$answer" = "$name" ] || die "отменено"
+  [ -e "$USERS_DIR/$name.conf" ] && cmd_disable "$name"
+  pkill -u "hermes-$name" 2>/dev/null || true
+  userdel --remove "hermes-$name" 2>/dev/null || true
+  rm -rf "${WORK_ROOT:?}/$name"
+  rm -f "$USERS_DIR/$name.conf"
+  regen
+  info "$name удалён полностью"
+}
+
+cmd_list() {
+  local f name port en state
+  printf '%-14s %-6s %-8s %s\n' ИМЯ ПОРТ ВХОД СЕРВИС
+  for f in "$USERS_DIR"/*.conf; do
+    [ -e "$f" ] || continue
+    name=$(basename "$f" .conf)
+    port=$(sed -n 's/^PORT=//p' "$f")
+    en=$(sed -n 's/^ENABLED=//p' "$f")
+    state=$(systemctl is-active "hermes-dashboard@$name" 2>/dev/null || true)
+    printf '%-14s %-6s %-8s %s\n' "$name" "$port" "$en" "$state"
+  done
+}
+
+case "${1:-}" in
+  add)     [ $# -eq 2 ] || die "hermes-user add <имя>";     cmd_add "$2" ;;
+  passwd)  [ $# -eq 2 ] || die "hermes-user passwd <имя>";  cmd_passwd "$2" ;;
+  disable) [ $# -eq 2 ] || die "hermes-user disable <имя>"; cmd_disable "$2" ;;
+  purge)   [ $# -eq 2 ] || die "hermes-user purge <имя>";   cmd_purge "$2" ;;
+  list)    cmd_list ;;
+  regen)   regen ;;
+  *)       sed -n '3,11p' "$0"; exit 1 ;;
+esac

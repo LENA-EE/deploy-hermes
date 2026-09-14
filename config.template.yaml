@@ -1,0 +1,25 @@
+# /etc/hermes/config.template.yaml
+# Базовый config.yaml для каждого нового пользователя.
+# @WORKDIR@ заменяется скриптом hermes-user на /srv/hermes/<имя>.
+# Имена ключей сверить с `hermes-run config show` на установленной версии.
+
+model:
+  provider: openai
+  name: @MODEL@
+
+approvals:
+  mode: manual
+  deny:
+    - "*curl*"
+    - "*wget*"
+    - "git push*"
+    - "git merge*"
+
+terminal:
+  backend: local        # НЕ docker: нужен docker-сокет, это дыра
+  cwd: @WORKDIR@
+
+security:
+  allow_private_urls: false
+  allow_lazy_installs: false
+  tirith_enabled: true

@@ -1,0 +1,37 @@
+#!/bin/bash
+# /usr/local/bin/hermes-run — запускает Hermes от имени текущего пользователя
+# с его собственным HERMES_HOME. Используется systemd-юнитами и руками:
+#   sudo -iu hermes-ivanov hermes-run doctor
+set -euo pipefail
+
+# HERMES_PYTHON задаётся в /etc/hermes/hermes.env:
+#   общая установка:       HERMES_PYTHON=/opt/hermes/venv/bin/python
+#   установка на человека: HERMES_PYTHON=@HOME@/.hermes/hermes-agent/venv/bin/python
+# shellcheck source=/dev/null
+. /etc/hermes/hermes.env
+
+: "${HOME:?HOME не задан}"
+export HERMES_HOME="$HOME/.hermes"
+python="${HERMES_PYTHON//@HOME@/$HOME}"
+
+if [ ! -x "$python" ]; then
+  echo "hermes-run: не найден интерпретатор $python (проверь /etc/hermes/hermes.env)" >&2
+  exit 1
+fi
+
+# LD_LIBRARY_PATH из бандла ломает системные программы (банковская инструкция п. 2.2),
+# поэтому глобально она не задаётся. Если Hermes без неё не стартует — HERMES_LD_LIBRARY_PATH
+# в /etc/hermes/hermes.env, и она действует только на этот процесс.
+unset LD_LIBRARY_PATH
+if [ -n "${HERMES_LD_LIBRARY_PATH:-}" ]; then
+  export LD_LIBRARY_PATH="$HERMES_LD_LIBRARY_PATH"
+fi
+
+# node, rg, ffmpeg из общей установки (установщик клал ярлыки в ~/.local/bin, у агентов его нет)
+if [ -n "${HERMES_PATH_PREPEND:-}" ]; then
+  export PATH="$HERMES_PATH_PREPEND:$PATH"
+fi
+[ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ] && export PLAYWRIGHT_BROWSERS_PATH
+[ -n "${HERMES_GIT_BASH_PATH:-}" ] && export HERMES_GIT_BASH_PATH
+
+exec "$python" -m hermes_cli.main "$@"
