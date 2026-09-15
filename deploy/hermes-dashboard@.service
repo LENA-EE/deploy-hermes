@@ -14,7 +14,7 @@ Slice=hermes.slice
 EnvironmentFile=/etc/hermes/users/%i.conf
 Environment=HOME=/home/hermes-%i
 WorkingDirectory=/srv/hermes/%i
-ExecStart=/usr/local/bin/hermes-run dashboard --host 127.0.0.1 --port ${PORT} --no-open --skip-build
+ExecStart=/usr/local/bin/hermes-run dashboard --host 127.0.0.1 --port ${PORT} --no-open --skip-build --tui
 Restart=on-failure
 RestartSec=5
 UMask=0077
