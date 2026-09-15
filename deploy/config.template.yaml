@@ -1,25 +1,23 @@
 # /etc/hermes/config.template.yaml
 # Базовый config.yaml для каждого нового пользователя.
-# @WORKDIR@ заменяется скриптом hermes-user на /srv/hermes/<имя>.
-# Имена ключей сверить с `hermes-run config show` на установленной версии.
+# @WORKDIR@ и @MODEL@ подставляет hermes-user.
+# Ключи сверены с hermes_cli/config.py (DEFAULT_CONFIG) Hermes v0.13.0.
 
-model:
-  provider: openai
-  name: @MODEL@
+model: @MODEL@
 
 approvals:
-  mode: manual
-  deny:
-    - "*curl*"
-    - "*wget*"
-    - "git push*"
-    - "git merge*"
+  mode: manual          # опасные команды — только после подтверждения человеком (так и по умолчанию)
+  timeout: 60           # сколько секунд ждать ответа на запрос подтверждения
+  cron_mode: deny       # фоновые задачи опасные команды не выполняют
+  # Своего списка запрещённых команд в v0.13.0 нет — ключ deny не поддерживается.
+  # Сеть режут nftables и закрытый egress, а не конфиг.
 
 terminal:
-  backend: local        # НЕ docker: нужен docker-сокет, это дыра
+  backend: local        # НЕ docker: нужен docker-сокет, это управление хостом
   cwd: @WORKDIR@
 
 security:
-  allow_private_urls: false
-  allow_lazy_installs: false
-  tirith_enabled: true
+  allow_private_urls: false   # веб-инструменты не ходят во внутреннюю сеть
+  redact_secrets: true        # маскировать пароли и токены в выводе и логах
+  tirith_enabled: true        # сканер команд tirith (если бинарника нет — проверка молча пропускается)
+  allow_lazy_installs: false  # агент не доустанавливает пакеты сам
