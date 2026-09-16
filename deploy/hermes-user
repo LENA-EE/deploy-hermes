@@ -115,7 +115,7 @@ EOF
 }
 
 cmd_add() {
-  local name=$1 user="hermes-$1" home="/home/hermes-$1" work="$WORK_ROOT/$1" port model
+  local name=$1 user="hermes-$1" home="/home/hermes-$1" work="$WORK_ROOT/$1" port model base_url api_key
   valid_name "$name"
   [ -r "$MODEL_ENV" ]       || die "нет $MODEL_ENV (часть 2.2 плана)"
   [ -r "$CONFIG_TEMPLATE" ] || die "нет $CONFIG_TEMPLATE"
@@ -147,13 +147,22 @@ EOF
   info "HERMES_HOME $home/.hermes"
   install -d -m 700 -o "$user" -g "$user" "$home/.hermes"
   model=$(sed -n 's/^MODEL=//p' "$MODEL_ENV")
+  base_url=$(sed -n 's/^OPENAI_BASE_URL=//p' "$MODEL_ENV")
+  api_key=$(sed -n 's/^OPENAI_API_KEY=//p' "$MODEL_ENV")
+  [ -n "$model" ] && [ -n "$base_url" ] && [ -n "$api_key" ] || die "в $MODEL_ENV нужны MODEL, OPENAI_BASE_URL, OPENAI_API_KEY"
   {
     grep -v '^MODEL=' "$MODEL_ENV"
     echo "HERMES_DASHBOARD_HOST=127.0.0.1"
     echo "API_SERVER_HOST=127.0.0.1"
     echo "HERMES_WRITE_SAFE_ROOT=$work"
+    # Python в Hermes не видит банковский CA без явного пути к системному списку
+    # (шаг 5 банковского setup-ssl.sh; без этого — "Connection error")
+    echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    echo "SSL_CERT_DIR=/etc/ssl/certs"
+    echo "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+    echo "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
   } >"$home/.hermes/.env"
-  sed -e "s|@WORKDIR@|$work|g" -e "s|@MODEL@|$model|g" "$CONFIG_TEMPLATE" >"$home/.hermes/config.yaml"
+  sed -e "s|@WORKDIR@|$work|g" -e "s|@MODEL@|$model|g"       -e "s|@BASE_URL@|$base_url|g" -e "s|@API_KEY@|$api_key|g"       "$CONFIG_TEMPLATE" >"$home/.hermes/config.yaml"
   chown "$user:$user" "$home/.hermes/.env" "$home/.hermes/config.yaml"
   chmod 600 "$home/.hermes/.env" "$home/.hermes/config.yaml"
 
