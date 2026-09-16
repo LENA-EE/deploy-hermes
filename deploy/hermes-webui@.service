@@ -1,0 +1,63 @@
+# /etc/systemd/system/hermes-webui@.service
+# Шаблон: hermes-webui@agent → Hermes WebUI от hermes-agent, память /home/hermes-agent/.hermes,
+# слушает 127.0.0.1:${PORT} из /etc/hermes/users/agent.conf. Клетка — как у hermes-dashboard@.
+[Unit]
+Description=Hermes WebUI for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes-%i
+Group=hermes-%i
+Slice=hermes.slice
+EnvironmentFile=/etc/hermes/hermes.env
+EnvironmentFile=/etc/hermes/users/%i.conf
+Environment=HOME=/home/hermes-%i
+Environment=HERMES_HOME=/home/hermes-%i/.hermes
+Environment=HERMES_WEBUI_AGENT_DIR=/opt/hermes/hermes-agent
+Environment=HERMES_WEBUI_PYTHON=/opt/hermes/hermes-agent/venv/bin/python
+Environment=HERMES_WEBUI_HOST=127.0.0.1
+Environment=HERMES_WEBUI_STATE_DIR=/home/hermes-%i/.hermes/webui
+Environment=HERMES_WEBUI_DEFAULT_WORKSPACE=/srv/hermes/%i
+Environment=PYTHONDONTWRITEBYTECODE=1
+WorkingDirectory=/opt/hermes-webui
+ExecStart=/bin/sh -c 'export PATH="$HERMES_PATH_PREPEND:$PATH" HERMES_WEBUI_PORT="$PORT"; exec /opt/hermes/hermes-agent/venv/bin/python /opt/hermes-webui/server.py'
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+MemoryHigh=1200M
+MemoryMax=1500M
+CPUQuota=150%
+TasksMax=256
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+ProtectSystem=strict
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=tmpfs
+BindPaths=/home/hermes-%i
+TemporaryFileSystem=/srv/hermes:ro
+BindPaths=/srv/hermes/%i
+ReadWritePaths=/home/hermes-%i /srv/hermes/%i
+InaccessiblePaths=-/opt/hermes/.install-home -/etc/hermes/model.env -/etc/nginx
+ProtectProc=invisible
+ProcSubset=pid
+
+[Install]
+WantedBy=multi-user.target
