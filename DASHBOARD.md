@@ -42,6 +42,33 @@ sudo chmod -R go-w,a+rX hermes_cli/web_dist ui-tui/dist
 ls hermes_cli/web_dist/index.html ui-tui/dist/entry.js               # ждём оба файла
 ```
 
+## 2а. Библиотеки для вкладки чата ⏳
+
+Симптом без этого шага: дашборд работает, но вкладка Chat показывает `Chat unavailable: 1`.
+
+Причина: вкладка чата запускает `node ui-tui/dist/entry.js`, которому нужны рабочие библиотеки
+(`ui-tui/node_modules`, в том числе `@hermes/ink`). Не найдя их, Hermes пытается выполнить
+`npm install` в `/opt/hermes` — без интернета и без прав на запись это завершается кодом 1.
+
+Пакет: `dashboard/hermes-tui-node-modules-2026.5.7.zip` (8 МБ) — только runtime-зависимости
+(`npm ci --omit=dev`), без инструментов сборки.
+SHA-256: `ac7c332801a1b7a8cf41c59bd2a02538bc6e40a4c2d519ef6c73b86a5edb96fb`
+
+```bash
+sha256sum ~/hermes-tui-node-modules-2026.5.7.zip        # сверить с хешем выше
+cd /opt/hermes-2026.5.7/hermes-agent
+sudo /opt/hermes/hermes-agent/venv/bin/python -m zipfile -e ~/hermes-tui-node-modules-2026.5.7.zip .   # встанет в ui-tui/node_modules
+# Hermes сверяет package-lock.json с составом node_modules и при расхождении запускает npm install.
+# В поставке только runtime-зависимости, поэтому убираем файл сверки: при его отсутствии проверка
+# считает, что устанавливать нечего (hermes_cli/main.py, _tui_need_npm_install).
+sudo mv ui-tui/package-lock.json ui-tui/package-lock.json.offline
+sudo chown -R root:root ui-tui/node_modules && sudo chmod -R go-w,a+rX ui-tui/node_modules
+ls ui-tui/node_modules/@hermes/ink/package.json          # ждём: файл есть
+sudo systemctl restart hermes-dashboard@agent            # перезапустить дашборд
+```
+
+Проверка: вкладка Chat открывается и отвечает.
+
 ## 3. Запустить для себя ⏳
 
 ```bash
@@ -63,5 +90,6 @@ ssh -p 215 -N -L 9121:127.0.0.1:9121 <учётка>@<IP>
 ## Известные тонкости
 
 - Дашборд запускается с `--skip-build`: без собранного `web_dist` он падал.
-- Вкладка чата работает через встроенный терминал (PTY), поэтому нужна и сборка `ui-tui`.
+- Вкладка чата работает через встроенный терминал (PTY): нужны и сборка `ui-tui/dist`, и её
+  runtime-зависимости `ui-tui/node_modules` (шаг 2а).
 - Страницы «Проекты» в дашборде нет ни в этой, ни в свежей версии — это функция стороннего WebUI.
