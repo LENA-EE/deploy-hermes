@@ -69,6 +69,44 @@ sudo systemctl restart hermes-dashboard@agent            # перезапуст�
 
 Проверка: вкладка Chat открывается и отвечает.
 
+## 2б. Признак «сборка устарела» ⏳
+
+Симптом: в журнале `TUI build failed`, `Cannot find package 'esbuild'`, вкладка Chat не открывается,
+хотя `ui-tui/dist` и `ui-tui/node_modules` на месте.
+
+Причина — нестыковка внутри самой версии: перед запуском вкладки Hermes проверяет наличие файла
+`ui-tui/packages/hermes-ink/dist/ink-bundle.js` (`hermes_cli/main.py`, `_hermes_ink_bundle_stale`),
+а сборка этого пакета создаёт `entry-exports.js`. Файла с ожидаемым именем не существует никогда,
+поэтому сборка всегда считается устаревшей и Hermes запускает `npm run build` — в закрытом контуре
+он падает на отсутствующих инструментах сборки.
+
+Пакет: `dashboard/hermes-tui-ink-dist-2026.5.7.zip` (202 КБ) — собранный пакет `hermes-ink`,
+файл положен под обоими именами, чтобы проверка проходила.
+SHA-256: `57082b607bf5fd6371edafd1f4721276428467aea94bdeeac27b0b712432ff10`
+
+```bash
+sha256sum ~/hermes-tui-ink-dist-2026.5.7.zip     # сверить с хешем выше
+cd /opt/hermes-2026.5.7/hermes-agent
+sudo /opt/hermes/hermes-agent/venv/bin/python -m zipfile -e ~/hermes-tui-ink-dist-2026.5.7.zip .
+sudo chown -R root:root ui-tui/packages/hermes-ink/dist
+sudo chmod -R go-w,a+rX ui-tui/packages/hermes-ink/dist
+sudo systemctl restart hermes-dashboard@agent
+sudo journalctl -u hermes-dashboard@agent --since -2min --no-pager | tail -5   # ждём: без TUI build failed
+```
+
+Если ранее применялся обходной путь с заглушкой `ui-tui/scripts/build.mjs` — после этого шага
+её можно убрать, чтобы в установке не оставалось изменённых файлов приложения:
+
+```bash
+sudo rm -f /opt/hermes-2026.5.7/hermes-agent/ui-tui/scripts/build.mjs        # заглушка больше не нужна
+ls /opt/hermes-2026.5.7/hermes-agent/ui-tui/scripts/                          # останется build.mjs.disabled (оригинал бандла) и profile-tui.mjs
+sudo systemctl restart hermes-dashboard@agent
+```
+
+> Отличие бандла от публичных исходников: в банковском бандле есть `ui-tui/scripts/build.mjs`,
+> в теге `v2026.5.7` на GitHub его нет — бандл собран из соседнего коммита. На работу сборок,
+> приведённых здесь, это не повлияло.
+
 ## 3. Запустить для себя ⏳
 
 ```bash
@@ -90,6 +128,6 @@ ssh -p 215 -N -L 9121:127.0.0.1:9121 <учётка>@<IP>
 ## Известные тонкости
 
 - Дашборд запускается с `--skip-build`: без собранного `web_dist` он падал.
-- Вкладка чата работает через встроенный терминал (PTY): нужны и сборка `ui-tui/dist`, и её
-  runtime-зависимости `ui-tui/node_modules` (шаг 2а).
+- Вкладка чата работает через встроенный терминал (PTY): нужны сборка `ui-tui/dist`,
+  runtime-зависимости `ui-tui/node_modules` (шаг 2а) и собранный `hermes-ink` (шаг 2б).
 - Страницы «Проекты» в дашборде нет ни в этой, ни в свежей версии — это функция стороннего WebUI.
