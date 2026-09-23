@@ -117,7 +117,7 @@ sudo systemctl daemon-reload
 ```bash
 sudo tee /etc/hermes/model.env >/dev/null <<'EOF'
 MODEL=common-qwen
-OPENAI_BASE_URL=https://litellm.bc-dev2.int.gazprombank.ru/v1
+OPENAI_BASE_URL=<LITELLM_URL>
 OPENAI_API_KEY=<ключ>
 EOF
 sudo chmod 600 /etc/hermes/model.env
@@ -150,7 +150,7 @@ sudo systemctl enable nftables
 U=hermes-agent; W=/srv/hermes/agent
 sudo install -d -m 700 -o $U -g $U /home/$U/.hermes $W
 sudo tee /home/$U/.hermes/.env >/dev/null <<EOF
-OPENAI_BASE_URL=https://litellm.bc-dev2.int.gazprombank.ru/v1
+OPENAI_BASE_URL=<LITELLM_URL>
 OPENAI_API_KEY=<ключ>
 HERMES_WRITE_SAFE_ROOT=$W
 SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
@@ -159,7 +159,7 @@ REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 EOF
 sed -e "s|@WORKDIR@|$W|" -e "s|@MODEL@|common-qwen|g" \
-    -e "s|@BASE_URL@|https://litellm.bc-dev2.int.gazprombank.ru/v1|" -e "s|@API_KEY@|<ключ>|" \
+    -e "s|@BASE_URL@|<LITELLM_URL>|" -e "s|@API_KEY@|<ключ>|" \
     /etc/hermes/config.template.yaml | sudo tee /home/$U/.hermes/config.yaml >/dev/null
 sudo chown $U:$U /home/$U/.hermes/.env /home/$U/.hermes/config.yaml
 sudo chmod 600  /home/$U/.hermes/.env /home/$U/.hermes/config.yaml
@@ -177,10 +177,88 @@ sudo hermes-user list
 `dashboard/hermes-dashboard-web-2026.5.7.zip`, установка по `DASHBOARD.md`.
 Не запускать `add` для уже настроенного пользователя — перезапишет его конфиг.
 
-## 10. Веб для менеджеров ⏳
+## 10. Публикация веб-интерфейса ⏳
 
-1. Веб-интерфейс: `DASHBOARD.md` (штатный дашборд Hermes) либо `WEBUI.md` (сторонний hermes-webui).
-2. Внешний доступ: nginx по `deploy/nginx-hermes.conf` (вход по логину → свой порт).
-   Снаружи контейнер доступен через проброс портов на хосте, поэтому нужен либо проброс,
-   либо маршрут в общем корпоративном Apache; плюс доменное имя и сертификат.
-3. Проверка изоляции атаками — часть 4 проектного плана.
+Порядок обязателен: **сначала согласование ИБ, потом включение.** Туннели (`ssh -L/-R/-D/-N`)
+и любые самостоятельные проброс портов не используются — публикацию делают администраторы.
+
+### 10.1. Что просить у администраторов
+
+Один вход снаружи, независимо от числа пользователей:
+
+> Нужен маршрут до контейнера: проброс порта хоста либо виртуальный хост в корпоративном прокси.
+> На этом порту в контейнере будет **nginx с авторизацией**, он направляет каждого пользователя
+> в его экземпляр. Нужны WebSocket и таймаут ~3600 с. Уточнить, кто терминирует HTTPS.
+
+Пример полученного маршрута (сентябрь 2026):
+
+```
+https://hermes_agent_drospr.bc-dev2.int.gazprombank.ru  →  http://<IP контейнера>:9121
+```
+
+HTTPS терминирует корпоративный прокси, внутрь идёт обычный HTTP — сертификат в контейнере не нужен.
+
+### 10.2. Раскладка портов
+
+⚠️ На опубликованном порту должен слушать **nginx**, а не дашборд: иначе вход открыт без пароля.
+
+```
+прокси → <IP контейнера>:9121 = nginx (basic auth, маршрутизация по логину)
+                                  ├─ 127.0.0.1:9122  экземпляр agent
+                                  ├─ 127.0.0.1:9123  экземпляр tulkin
+                                  └─ 127.0.0.1:912x  …
+```
+
+Экземпляры пользователей слушают только loopback; наружу выходит единственный порт nginx.
+`hermes-user` выдаёт номера из диапазона 9121–9199 — занятый nginx номер занять в `/etc/hermes/users/`
+служебной записью либо начинать нумерацию с 9122.
+
+### 10.3. Конфигурация nginx
+
+`/etc/nginx/conf.d/hermes.conf` (публикация через прокси, TLS снаружи):
+
+```nginx
+map $remote_user $hermes_port {
+    include /etc/nginx/hermes-users.map;   # строки вида: tulkin 9123;  — генерирует hermes-user
+    default 0;
+}
+
+server {
+    listen 9121;                                   # порт, на который смотрит корпоративный прокси
+    server_name <домен сервиса>;
+
+    auth_basic           "Hermes";
+    auth_basic_user_file /etc/nginx/hermes.htpasswd;
+
+    location / {
+        if ($hermes_port = 0) { return 403; }      # логин без сопоставленного экземпляра — отказ
+        proxy_pass http://127.0.0.1:$hermes_port;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade; # чат работает по websocket
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host       $host;
+        proxy_set_header X-Real-IP  $remote_addr;
+        proxy_set_header Authorization "";         # пароль nginx дальше не передаётся
+        proxy_read_timeout 3600s;                  # агент отвечает долго
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+### 10.4. Включение и проверка
+
+```bash
+sudo nginx -t && sudo systemctl enable --now nginx          # проверить конфиг и поднять nginx
+sudo ss -tlnp | grep -E ':912[0-9]'                         # ждём: nginx на 9121, экземпляры на 127.0.0.1:9122+
+sudo systemctl start hermes-dashboard@agent                 # запускать экземпляры после согласования
+```
+
+Проверки со стороны пользователя: вход по домену требует логин и пароль; после входа открывается
+свой экземпляр; чат отвечает потоком (значит, websocket проходит); чужой логин ведёт в чужой
+экземпляр только с чужим паролем.
+
+### 10.5. Дальше
+
+- Проверка изоляции атаками — часть 4 проектного плана.
+- Обновление версии Hermes — переключением ссылки `/opt/hermes` (см. `DASHBOARD.md`, шаг 1).
