@@ -43,10 +43,8 @@ sudo systemctl stop 'hermes-dashboard@*'                 # аварийно ос
 Проверка работоспособности из консоли контейнера:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}
-' http://127.0.0.1:9122        # экземпляр отвечает: ждём 200
-curl -s -o /dev/null -w '%{http_code}
-' http://127.0.0.1:9121        # nginx без пароля: ждём 401
+curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9122; echo    # экземпляр отвечает: ждём 200
+curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9121; echo    # nginx без пароля: ждём 401
 sudo ss -tlnp | grep -E ':912[0-9]'                                    # nginx на 9121, экземпляры только на 127.0.0.1
 sudo nginx -t                                                          # конфиг nginx корректен
 sudo tail -5 /var/log/nginx/error.log                                  # ошибки входа и проксирования
