@@ -246,17 +246,46 @@ server {
 }
 ```
 
-### 10.4. Включение и проверка
+### 10.4. Включение: последовательность
+
+Порядок важен: сначала экземпляр освобождает опубликованный порт, затем на него встаёт nginx.
+Пример для контейнера с адресом `192.168.1.15`, опубликован порт 9121, первый пользователь — `agent`.
 
 ```bash
-sudo nginx -t && sudo systemctl enable --now nginx          # проверить конфиг и поднять nginx
-sudo ss -tlnp | grep -E ':912[0-9]'                         # ждём: nginx на 9121, экземпляры на 127.0.0.1:9122+
-sudo systemctl start hermes-dashboard@agent                 # запускать экземпляры после согласования
+# 0) адрес контейнера — он должен совпадать с тем, куда направлен корпоративный прокси
+ip -4 addr show | grep inet                                             # ждём адрес вида 192.168.1.15
+
+# 1) экземпляр пользователя переезжает с опубликованного порта на внутренний
+cat /etc/hermes/users/agent.conf                                        # что сейчас
+sudo sed -i 's/^PORT=9121$/PORT=9122/' /etc/hermes/users/agent.conf     # сменить номер порта
+sudo systemctl restart hermes-dashboard@agent                           # применить
+sudo ss -tlnp | grep 9122                                               # ждём 127.0.0.1:9122
+
+# 2) веб-пароль пользователя (попадает в /etc/nginx/hermes.htpasswd в виде хеша)
+sudo hermes-user passwd agent
+
+# 3) таблица «логин → порт» и правила изоляции портов
+sudo hermes-user regen
+cat /etc/nginx/hermes-users.map                                         # ждём строку: agent 9122;
+
+# 4) конфиг nginx из 10.3 (listen <IP контейнера>:9121), затем
+sudo rm -f /etc/nginx/sites-enabled/default                             # убрать стандартную заглушку
+sudo nginx -t && sudo systemctl enable --now nginx                      # проверить конфиг и запустить
+
+# 5) проверки ДО обращения из браузера
+sudo ss -tlnp | grep -E ':912[0-9]'                                     # nginx на <IP>:9121, экземпляры только на 127.0.0.1
+curl -s -o /dev/null -w '%{http_code}' http://<IP>:9121; echo           # без пароля: ждём 401
+curl -s -o /dev/null -w '%{http_code}' -u agent:<пароль> http://<IP>:9121; echo   # с паролем: ждём 200
 ```
 
-Проверки со стороны пользователя: вход по домену требует логин и пароль; после входа открывается
-свой экземпляр; чат отвечает потоком (значит, websocket проходит); чужой логин ведёт в чужой
-экземпляр только с чужим паролем.
+⚠️ `200` без пароля означает, что наружу выставлен сам экземпляр, а не nginx: немедленно
+`sudo systemctl stop 'hermes-dashboard@*'` и вернуться к шагу 1.
+
+Только после `401`/`200` — открывать домен в браузере. Следующие пользователи заводятся
+командой `sudo hermes-user add <имя>`: порт, пароль и строка в таблице создаются автоматически.
+
+Диагностика: `sudo nginx -t`, `sudo tail -20 /var/log/nginx/error.log`,
+`sudo journalctl -u hermes-dashboard@<имя> -n 20 --no-pager`.
 
 ### 10.5. Дальше
 
