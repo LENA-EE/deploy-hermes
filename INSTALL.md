@@ -215,36 +215,63 @@ HTTPS терминирует корпоративный прокси, внутр
 
 ### 10.3. Конфигурация nginx
 
-`/etc/nginx/conf.d/hermes.conf` (публикация через прокси, TLS снаружи):
+Проверено 2026-09-25. Четыре неочевидных места отмечены комментариями — без них
+страница открывается, но чат не работает.
+
+`/etc/nginx/conf.d/hermes.conf` (публикация через корпоративный прокси, TLS снаружи):
 
 ```nginx
 map $remote_user $hermes_port {
-    include /etc/nginx/hermes-users.map;   # строки вида: tulkin 9123;  — генерирует hermes-user
-    default 0;
+    include /etc/nginx/hermes-users.map;   # строки вида: agent 9122;  — генерирует hermes-user
+    default 1;                             # неизвестный логин → порт, где никто не слушает
 }
 
 server {
-    listen 9121;                                   # порт, на который смотрит корпоративный прокси
-    server_name <домен сервиса>;
+    listen 192.168.1.15:9121;              # адрес контейнера, на него смотрит корпоративный прокси
+    server_name hermes_agent_drospr.bc-dev2.int.gazprombank.ru;
 
-    auth_basic           "Hermes";
+    auth_basic           "Hermes";         # сначала логин и пароль
     auth_basic_user_file /etc/nginx/hermes.htpasswd;
 
     location / {
-        if ($hermes_port = 0) { return 403; }      # логин без сопоставленного экземпляра — отказ
-        proxy_pass http://127.0.0.1:$hermes_port;
+        proxy_pass http://127.0.0.1:$hermes_port;   # маршрут по логину
 
         proxy_http_version 1.1;
-        proxy_set_header Upgrade    $http_upgrade; # чат работает по websocket
+        proxy_set_header Upgrade    $http_upgrade;  # websocket: чат работает только через него
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host       $host;
-        proxy_set_header X-Real-IP  $remote_addr;
-        proxy_set_header Authorization "";         # пароль nginx дальше не передаётся
-        proxy_read_timeout 3600s;                  # агент отвечает долго
+
+        # (1) дашборд проверяет Host и принимает только имя, на которое привязан.
+        #     Он слушает 127.0.0.1 → передаём именно это, иначе 400 Invalid Host header.
+        proxy_set_header Host "127.0.0.1";
+
+        # (2) uvicorn по умолчанию доверяет заголовкам прокси и подменяет адрес клиента
+        #     на значение X-Forwarded-For. Дашборд затем считает websocket-клиента
+        #     неподходящим (ожидает локальный адрес) и отвечает 403 на рукопожатие.
+        #     Пустое значение = заголовок не передаётся.
+        proxy_set_header X-Real-IP         "";
+        proxy_set_header X-Forwarded-For   "";
+        proxy_set_header X-Forwarded-Proto "";
+
+        # (3) пароль nginx дальше не передаётся: у дашборда своя проверка токена
+        proxy_set_header Authorization "";
+
+        proxy_read_timeout 3600s;                   # (4) агент отвечает долго, минута не годится
         proxy_send_timeout 3600s;
+
+        proxy_intercept_errors on;
+        error_page 502 504 = @nouser;
+    }
+
+    location @nouser {
+        return 403 "No Hermes instance for this login
+";
     }
 }
 ```
+
+⚠️ Не использовать конструкцию `if ($hermes_port = 0) { return 403; }`: в nginx `if`
+выполняется раньше проверки пароля, поэтому запрос отбивается до авторизации (403 вместо 401),
+а `proxy_pass` получает пустой порт (400). Вместо неё — `default 1` в карте и `error_page`.
 
 ### 10.4. Включение: последовательность
 
@@ -296,6 +323,26 @@ curl -s -o /dev/null -w '%{http_code}' -u agent http://<IP>:9121; echo  # пар
 
 Диагностика: `sudo nginx -t`, `sudo tail -20 /var/log/nginx/error.log`,
 `sudo journalctl -u hermes-dashboard@<имя> -n 20 --no-pager`.
+
+### 10.5. Диагностика веб-доступа
+
+| Симптом | Причина | Решение |
+|---|---|---|
+| `403` без запроса пароля | в конфиге есть `if (...) { return 403; }` — срабатывает до авторизации | убрать `if`, использовать `default 1` + `error_page` |
+| `400`, в теле `Invalid Host header` | дашборд принимает только имя, на которое привязан | `proxy_set_header Host "127.0.0.1";` |
+| Страница открывается, чат молчит; в консоли браузера `WebSocket … 403` | uvicorn подменил адрес клиента по `X-Forwarded-For`, дашборд отклонил websocket | очистить `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto` |
+| `WebSocket … 403`, токен в адресе старый | токен сессии создаётся заново при каждом запуске дашборда | перезапустить дашборд, открыть страницу в приватном окне |
+| Ответ обрывается через минуту | таймаут на корпоративном прокси | попросить администраторов `proxy_read_timeout 3600s` и поддержку WebSocket |
+| `model catalog fetch failed … Name or service not known` | дашборд тянет справочник моделей с сайта проекта, интернета нет | безвредно: модель задаётся в `config.yaml`, список в интерфейсе останется пустым |
+
+Полезные команды:
+
+```bash
+sudo grep -E "api/(ws|events|pty)" /var/log/nginx/access.log | tail -3   # ждём код 101 — websocket открылся
+sudo tail -20 /var/log/nginx/error.log                                   # строки sched_setaffinity в LXC безвредны
+ps -eo cmd | grep "hermes_cli.main dashboard" | grep -v grep             # проверить наличие --tui: без него чат отключён
+sudo -iu hermes-<имя> hermes-run -z "Ответь: работает"                   # модель отвечает в обход веба
+```
 
 ### 10.5. Дальше
 
