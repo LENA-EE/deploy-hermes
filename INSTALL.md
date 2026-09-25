@@ -114,11 +114,28 @@ sudo systemctl daemon-reload
 
 ## 7. Настройки модели ✅
 
+`/etc/hermes/model.env` — источник настроек для **новых** пользователей: `hermes-user add`
+берёт отсюда модель, адрес и ключ. Без этого файла команда откажет:
+`hermes-user: нет /etc/hermes/model.env`.
+
 ```bash
 sudo tee /etc/hermes/model.env >/dev/null <<'EOF'
 MODEL=common-qwen
 OPENAI_BASE_URL=<LITELLM_URL>
 OPENAI_API_KEY=<ключ>
+EOF
+sudo chmod 600 /etc/hermes/model.env      # rw-------: в файле ключ, читает только root
+sudo grep -c '^MODEL=.\+\|^OPENAI_BASE_URL=.\+\|^OPENAI_API_KEY=.\+' /etc/hermes/model.env   # ждём 3
+```
+
+Если первый пользователь уже настроен вручную, значения можно взять из его конфига,
+не печатая ключ на экран:
+
+```bash
+sudo tee /etc/hermes/model.env >/dev/null <<EOF
+MODEL=common-qwen
+OPENAI_BASE_URL=$(sudo sed -n 's/^ *base_url: *//p' /home/hermes-agent/.hermes/config.yaml)
+OPENAI_API_KEY=$(sudo sed -n 's/^ *api_key: *//p' /home/hermes-agent/.hermes/config.yaml)
 EOF
 sudo chmod 600 /etc/hermes/model.env
 ```
@@ -166,18 +183,32 @@ sudo chmod 600  /home/$U/.hermes/.env /home/$U/.hermes/config.yaml
 sudo -iu $U hermes-run -z "Ответь одним словом: работает"
 ```
 
-### Пользователь с веб-дашбордом ⏳
+### Пользователь с веб-дашбордом ✅ (проверено 2026-09-25)
+
+Требуются: собранный веб-интерфейс (`DASHBOARD.md`), заполненный `/etc/hermes/model.env` (шаг 7)
+и настроенный nginx (шаг 10).
 
 ```bash
-sudo hermes-user add ivanov      # учётка hermes-ivanov, память, порт, веб-пароль, запуск клетки
-sudo hermes-user list
+sudo hermes-user add ivanov      # учётка hermes-ivanov, память, рабочая папка, свободный порт,
+                                 # веб-пароль (спросит дважды, ≥12 символов), запись для nginx,
+                                 # правила nftables, запуск клетки
+sudo hermes-user list            # ждём: ivanov  9123  yes  active
 ```
 
-Требует собранного веб-интерфейса (`hermes_cli/web_dist`): в бандле его нет, готовая сборка —
-`dashboard/hermes-dashboard-web-2026.5.7.zip`, установка по `DASHBOARD.md`.
-Не запускать `add` для уже настроенного пользователя — перезапишет его конфиг.
+Проверка нового пользователя, включая изоляцию:
 
-## 10. Публикация веб-интерфейса ⏳
+```bash
+sudo -iu hermes-ivanov hermes-run -z "Ответь одним словом: работает"                  # его модель отвечает
+curl -s -o /dev/null -w '%{http_code}' -u ivanov http://<IP контейнера>:9121; echo    # ждём 200
+sudo -iu hermes-ivanov cat /home/hermes-agent/.hermes/config.yaml                     # ждём Permission denied
+```
+
+Последняя команда — практическое подтверждение, что пользователи не видят файлы друг друга.
+
+Не запускать `add` для уже настроенного пользователя: команда перезапишет его конфиг.
+Прочие операции: `hermes-user passwd <имя>`, `disable <имя>`, `purge <имя>`, `list`.
+
+## 10. Публикация веб-интерфейса ✅ (проверено 2026-09-25)
 
 Порядок обязателен: **сначала согласование ИБ, потом включение.** Туннели (`ssh -L/-R/-D/-N`)
 и любые самостоятельные проброс портов не используются — публикацию делают администраторы.
@@ -273,7 +304,7 @@ server {
 выполняется раньше проверки пароля, поэтому запрос отбивается до авторизации (403 вместо 401),
 а `proxy_pass` получает пустой порт (400). Вместо неё — `default 1` в карте и `error_page`.
 
-### 10.4. Включение: последовательность
+### 10.4. Включение: последовательность ✅
 
 Порядок важен: сначала экземпляр освобождает опубликованный порт, затем на него встаёт nginx.
 Пример для контейнера с адресом `192.168.1.15`, опубликован порт 9121, первый пользователь — `agent`.
