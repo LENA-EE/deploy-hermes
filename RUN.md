@@ -52,8 +52,12 @@ sudo tail -5 /var/log/nginx/error.log                                  # оши�
 
 ## Пользователи
 
-Перед первым `add` должен существовать `/etc/hermes/model.env` (модель, адрес, ключ):
-без него команда откажет с сообщением «нет /etc/hermes/model.env».
+Перед первым `add` должен существовать `/etc/hermes/model.env` — семь строк: `MODEL`, `BASE_URL`,
+`API_KEY` и четыре `SSL_*`/`*_CA_BUNDLE` (см. `INSTALL.md`, шаг 7). Без файла команда откажет
+с сообщением «нет /etc/hermes/model.env».
+
+Конфиги уже заведённых пользователей при правке шаблона или `model.env` **не обновляются**:
+`regen` пересобирает только карту nginx и правила nftables. Проще всего пересоздать: `purge` + `add`.
 
 ```bash
 sudo hermes-user add ivanov       # завести
@@ -74,12 +78,14 @@ sudo systemd-cgtop -1 /hermes.slice                       # кто ест пам
 
 | Симптом | Где смотреть / что делать |
 |---|---|
+| `Failed to parse config.yaml: found character '@'` | в скрипте нет подстановки `@BASE_URL@`/`@API_KEY@` — см. `INSTALL.md`, шаг 7.1 |
 | `Unknown provider` | в `config.yaml` должно быть `model.provider: custom` |
 | `Connection error` | в `.env` агента четыре строки `SSL_*` / `*_CA_BUNDLE`; `logs errors` |
 | Настройки не действуют | `logs errors` → «Falling back to default config» = сломан YAML |
 | Hermes читает не тот конфиг | запускать с `sudo -iu` (буква `i`); `config show` → раздел Paths |
 | `~` указывает не туда | в `sudo -iu X команда ~/...` тильду разворачивает **твой** shell — писать полный путь |
 | После правки YAML всё сломалось | перезаписать файл целиком (`sudo tee`), не удалять строки по номерам |
+| `hermes-user: пароль короче 12 символов` | `add` прерывается на полпути: учётка и порт есть, сервис `inactive` — доделать `passwd`, затем `systemctl enable --now hermes-dashboard@<имя>` |
 | `hermes-user: нет /etc/hermes/model.env` | не создан файл с настройками модели для новых пользователей — см. `INSTALL.md`, шаг 7 |
 | Веб открывается, чат молчит, в консоли браузера `WebSocket … 403` | nginx передаёт `X-Forwarded-For`, дашборд считает клиента нелокальным — очистить `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto` в `/etc/nginx/conf.d/hermes.conf` |
 | `400 Invalid Host header` | дашборд принимает только имя, на которое привязан — `proxy_set_header Host "127.0.0.1";` |

@@ -1,6 +1,7 @@
 # /etc/hermes/config.template.yaml
 # Базовый config.yaml для каждого нового пользователя.
-# @MODEL@ @BASE_URL@ @API_KEY@ @WORKDIR@ подставляет hermes-user из /etc/hermes/model.env.
+# Значения на местах @...@ подставляет hermes-user из /etc/hermes/model.env.
+# Имена плейсхолдеров в комментариях не пишем: иначе ключ попадёт в готовый конфиг ещё и сюда.
 # Проверено на Hermes v0.13.0 (2026-09-16): модель ответила.
 
 model:

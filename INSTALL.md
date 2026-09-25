@@ -118,14 +118,22 @@ sudo systemctl daemon-reload
 берёт отсюда модель, адрес и ключ. Без этого файла команда откажет:
 `hermes-user: нет /etc/hermes/model.env`.
 
+Семь строк: три про модель и четыре про банковский сертификат. Скрипт копирует в `.env`
+каждого нового пользователя все строки, кроме `MODEL=`, — поэтому SSL-переменные, которые
+Hermes иначе не получит, задаются здесь же один раз, а не дописываются потом руками.
+
 ```bash
 sudo tee /etc/hermes/model.env >/dev/null <<'EOF'
 MODEL=common-qwen
-OPENAI_BASE_URL=<LITELLM_URL>
-OPENAI_API_KEY=<ключ>
+BASE_URL=<LITELLM_URL>
+API_KEY=<ключ>
+SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+SSL_CERT_DIR=/etc/ssl/certs
+REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 EOF
 sudo chmod 600 /etc/hermes/model.env      # rw-------: в файле ключ, читает только root
-sudo grep -c '^MODEL=.\+\|^OPENAI_BASE_URL=.\+\|^OPENAI_API_KEY=.\+' /etc/hermes/model.env   # ждём 3
+sudo grep -c . /etc/hermes/model.env       # ждём 7 непустых строк
 ```
 
 Если первый пользователь уже настроен вручную, значения можно взять из его конфига,
@@ -134,18 +142,57 @@ sudo grep -c '^MODEL=.\+\|^OPENAI_BASE_URL=.\+\|^OPENAI_API_KEY=.\+' /etc/hermes
 ```bash
 sudo tee /etc/hermes/model.env >/dev/null <<EOF
 MODEL=common-qwen
-OPENAI_BASE_URL=$(sudo sed -n 's/^ *base_url: *//p' /home/hermes-agent/.hermes/config.yaml)
-OPENAI_API_KEY=$(sudo sed -n 's/^ *api_key: *//p' /home/hermes-agent/.hermes/config.yaml)
+BASE_URL=$(sudo sed -n 's/^ *base_url: *//p' /home/hermes-agent/.hermes/config.yaml)
+API_KEY=$(sudo sed -n 's/^ *api_key: *//p' /home/hermes-agent/.hermes/config.yaml)
+SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+SSL_CERT_DIR=/etc/ssl/certs
+REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 EOF
 sudo chmod 600 /etc/hermes/model.env
 ```
+
+### 7.1. Шаблон конфига: три условия ✅ (проверено 2026-09-25)
+
+`hermes-user add` собирает `config.yaml` пользователя из `/etc/hermes/config.template.yaml`,
+подставляя значения из `model.env`. Всё, что заведено раньше, при правке шаблона **не меняется**:
+`hermes-user regen` пересобирает только карту nginx и правила nftables, конфиги пользователей — нет.
+
+Три условия, без которых новый пользователь окажется нерабочим:
+
+| Условие | Если нарушено |
+|---|---|
+| В шаблоне `model:` — блок с `provider: custom`, `name`, `default`, `base_url`, `api_key` | `AuthError: No inference provider configured` |
+| В скрипте есть подстановка всех четырёх плейсхолдеров: `@WORKDIR@`, `@MODEL@`, `@BASE_URL@`, `@API_KEY@` | `Failed to parse config.yaml: found character '@'` → молчаливый откат к умолчаниям и тот же `AuthError` |
+| В `model.env` есть четыре строки `SSL_*`/`*_CA_BUNDLE` | `API call failed after 3 retries: Connection error` при работающем `curl` |
+
+Проверка шаблона и скрипта перед первым заведением:
+
+```bash
+sudo grep -c '@WORKDIR@\|@MODEL@\|@BASE_URL@\|@API_KEY@' /usr/local/sbin/hermes-user   # ждём 1: все в одной строке sed
+sudo grep -A5 '^model:' /etc/hermes/config.template.yaml    # ждём блок с provider: custom
+```
+
+Имена плейсхолдеров не должны встречаться в комментариях шаблона: подстановка идёт по всему файлу,
+и ключ окажется в готовом конфиге ещё и в комментарии.
+
+Приёмка на одноразовом пользователе — она же ответ на вопрос «не будет ли гемора в следующий раз»:
+
+```bash
+sudo hermes-user add probnik                                      # пароль не короче 12 символов
+sudo grep -q '@' /home/hermes-probnik/.hermes/config.yaml   && echo 'ПЛОХО: плейсхолдеры не подставлены' || echo 'ок: плейсхолдеры подставлены'
+sudo -iu hermes-probnik hermes-run -z "Ответь одним словом: работает"   # ждём ответ модели
+sudo hermes-user purge probnik                                    # убрать за собой
+```
+
+Если `probnik` отвечает без единой ручной правки — заведение коллеги дальше это ровно одна команда.
 
 ### Расхождения документации с версией v0.13.0
 
 | Симптом | Причина | Правильно |
 |---|---|---|
 | `Unknown provider 'openai'` / уходит на `openrouter.ai` | в v0.13.0 нет провайдера `openai`; `model:` строкой не понимается | `model.provider: custom`, `base_url` и `api_key` внутри `model:` (так в шаблоне) |
-| `Connection error`, хотя `curl` работает | Python в Hermes не доверяет банковскому CA | в `.env` агента: `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` → `/etc/ssl/certs/...` (скрипт `hermes-user` пишет сам) |
+| `Connection error`, хотя `curl` работает | Python в Hermes не доверяет банковскому CA | четыре строки `SSL_*`/`*_CA_BUNDLE` в `/etc/hermes/model.env` → скрипт копирует их в `.env` каждого пользователя |
 | Настройки «не применяются» | YAML сломан → Hermes молча берёт умолчания | `hermes-run logs errors --since 10m`; конфиг править целиком, не `sed` по номерам строк |
 
 ## 8. Файрвол ⏳
