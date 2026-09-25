@@ -80,8 +80,8 @@ sudo systemd-cgtop -1 /hermes.slice                       # кто ест пам
 | Hermes читает не тот конфиг | запускать с `sudo -iu` (буква `i`); `config show` → раздел Paths |
 | `~` указывает не туда | в `sudo -iu X команда ~/...` тильду разворачивает **твой** shell — писать полный путь |
 | После правки YAML всё сломалось | перезаписать файл целиком (`sudo tee`), не удалять строки по номерам |
-| `hermes-user: нет /etc/hermes/model.env` | не создан файл с настройками модели для новых пользователей | см. `INSTALL.md`, шаг 7 |
-| Веб открывается, чат молчит, в консоли браузера `WebSocket … 403` | nginx передаёт `X-Forwarded-For`, дашборд считает клиента нелокальным | очистить `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto` в `/etc/nginx/conf.d/hermes.conf` |
-| `400 Invalid Host header` | дашборд принимает только имя, на которое привязан | `proxy_set_header Host "127.0.0.1";` |
+| `hermes-user: нет /etc/hermes/model.env` | не создан файл с настройками модели для новых пользователей — см. `INSTALL.md`, шаг 7 |
+| Веб открывается, чат молчит, в консоли браузера `WebSocket … 403` | nginx передаёт `X-Forwarded-For`, дашборд считает клиента нелокальным — очистить `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto` в `/etc/nginx/conf.d/hermes.conf` |
+| `400 Invalid Host header` | дашборд принимает только имя, на которое привязан — `proxy_set_header Host "127.0.0.1";` |
 
 Порядок диагностики: `logs errors` → `doctor` → проверка путей в `config show` → гипотезы.
