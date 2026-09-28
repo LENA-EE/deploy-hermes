@@ -1,7 +1,11 @@
-[Unit]
 # Шлюз Hermes для одного пользователя: исполняет задачи по расписанию (кроны).
 # Без него задачи создаются, но не срабатывают: дашборд их не исполняет.
 # Имя экземпляра %i — имя пользователя без префикса: hermes-gateway@ivanov.
+#
+# ВНИМАНИЕ: systemd НЕ понимает комментарии в конце строки — всё после значения
+# попадает в само значение. Поэтому все пояснения здесь стоят отдельными строками.
+# После правки обязательно: systemd-analyze verify hermes-gateway@ivanov.service
+[Unit]
 Description=Hermes gateway for %i (scheduled jobs)
 After=network-online.target
 Wants=network-online.target
@@ -10,23 +14,36 @@ Wants=network-online.target
 Type=simple
 User=hermes-%i
 Group=hermes-%i
-Slice=hermes.slice                      # общий срез: лимиты на всех пользователей сразу
-WorkingDirectory=/opt/hermes            # обязательно: пакет не установлен в окружение
+# Общий срез: лимиты считаются на всех пользователей сразу
+Slice=hermes.slice
+# Обязательно: пакет не установлен в окружение, запуск идёт из каталога установки
+WorkingDirectory=/opt/hermes
+# Замки, база задач и конфигурация лежат в ~/.hermes — путь задаём явно
+Environment=HOME=/home/hermes-%i
 
-# Шлюз работает в переднем плане — systemd сам следит за процессом.
+# Шлюз работает в переднем плане — systemd сам следит за процессом
 ExecStart=/opt/hermes/venv/bin/python -m hermes_cli.main gateway
 
-Restart=on-failure
+# always, а не on-failure: штатный выход кодом 0 иначе не перезапускается
+# и задачи по расписанию тихо перестают срабатывать
+Restart=always
 RestartSec=10s
 
 # ── Песочница: та же, что у дашборда ────────────────────────────────────────
-NoNewPrivileges=yes                     # процесс не может повысить свои права
-ProtectSystem=strict                    # вся система только на чтение
-ProtectHome=tmpfs                       # чужие домашние каталоги не видны
-BindPaths=/home/hermes-%i               # свой — виден
-ReadWritePaths=/home/hermes-%i /srv/hermes/%i    # писать можно только к себе
-PrivateTmp=yes                          # свой /tmp, не общий
-ProtectProc=invisible                   # чужие процессы не видны
+# Процесс не может повысить свои права
+NoNewPrivileges=yes
+# Вся система только на чтение
+ProtectSystem=strict
+# Чужие домашние каталоги не видны
+ProtectHome=tmpfs
+# Свой — виден
+BindPaths=/home/hermes-%i
+# Писать можно только к себе
+ReadWritePaths=/home/hermes-%i /srv/hermes/%i
+# Свой /tmp, не общий
+PrivateTmp=yes
+# Чужие процессы не видны
+ProtectProc=invisible
 ProcSubset=pid
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -35,7 +52,8 @@ RestrictSUIDSGID=yes
 RemoveIPC=yes
 LockPersonality=yes
 
-# ── Ресурсы: шлюз легче дашборда, но лимит нужен ────────────────────────────
+# ── Ресурсы ─────────────────────────────────────────────────────────────────
+# Замерено: шлюз занимает ~190 МБ в покое и под нагрузкой, запас пятикратный
 MemoryMax=1G
 CPUQuota=100%
 TasksMax=128

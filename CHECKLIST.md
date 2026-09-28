@@ -168,10 +168,20 @@ sudo systemctl daemon-reload && sudo systemctl restart 'hermes-dashboard@*'
 
 ```bash
 sudo install -m 644 ~/deploy/hermes-gateway@.service /etc/systemd/system/
+sudo systemd-analyze verify hermes-gateway@agent.service   # ОБЯЗАТЕЛЬНО: ждём пустой вывод
 sudo systemctl daemon-reload
 sudo systemctl enable --now hermes-gateway@agent
 sudo -iu hermes-agent hermes-run cron status   # ждём: Gateway is running
 ```
+
+> **Почему проверка обязательна.** systemd не понимает комментарии в конце строки: всё после
+> значения попадает в само значение. Юнит при этом стартует и выглядит рабочим, а песочница
+> молча отключена. Пустой вывод `systemd-analyze verify` — единственное доказательство,
+> что ограничения применились. Делать после любой правки любого юнита.
+
+Задача начинается в назначенную минуту или в течение следующей — планировщик проверяет
+расписание раз в минуту. Контроль отказов — `cron runs` и `cron incidents`: `cron status`
+светит зелёным даже после неудачных запусков.
 
 **Важно:** при создании задачи указывать рабочий каталог явно, иначе агент окажется
 в каталоге программы и не сможет писать:
@@ -179,7 +189,14 @@ sudo -iu hermes-agent hermes-run cron status   # ждём: Gateway is running
 ```bash
 sudo -iu hermes-agent hermes-run cron create "0 9 * * 1" "Собери сводку за неделю" \
      --name "недельная сводка" --workdir /srv/hermes/agent
+
+# Проверка часового пояса: в ответе должно быть +03:00, а не +00:00
+sudo -iu hermes-agent hermes-run cron create "0 9 * * *" "проверка" --name tz-check
+sudo -iu hermes-agent hermes-run cron list
 ```
+
+Если время показано как `+00:00` — в конфигурации не хватает `timezone`, и расписание
+съедет на три часа. Это единственная точка, где ошибка даёт такой эффект.
 
 ### 7.4. Прочее
 
