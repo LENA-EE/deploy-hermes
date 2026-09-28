@@ -75,6 +75,25 @@ sudo systemd-cgtop -1 /hermes.slice                       # кто ест пам
 sudo hermes-user list                                     # сколько заведено и что работает
 ```
 
+## Задачи по расписанию (кроны)
+
+Задачи создаются в дашборде или командой, но **исполняет их отдельный процесс-шлюз**.
+Без него они молча не срабатывают.
+
+```bash
+sudo systemctl enable --now hermes-gateway@ivanov      # шлюз пользователя
+sudo -iu hermes-ivanov hermes-run cron status          # ждём: Gateway is running
+sudo -iu hermes-ivanov hermes-run cron list            # какие задачи заведены
+sudo -iu hermes-ivanov hermes-run cron runs            # история запусков
+```
+
+При создании задачи **обязательно указывать рабочий каталог**: иначе агент окажется в каталоге
+программы (`/opt/hermes`), куда писать нельзя, и задача завершится впустую.
+
+```bash
+sudo -iu hermes-ivanov hermes-run cron create "0 9 * * 1" "Собери сводку за неделю"      --name "недельная сводка" --workdir /srv/hermes/ivanov
+```
+
 ## Масштабирование
 
 **Учётные записи заводятся по запросу, а не всем заранее.** Экземпляр простаивающего
