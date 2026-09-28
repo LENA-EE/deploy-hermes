@@ -179,10 +179,10 @@ sudo grep -A5 '^model:' /etc/hermes/config.template.yaml    # ждём блок 
 Приёмка на одноразовом пользователе — проверка того, что следующее заведение пройдёт без ручных правок:
 
 ```bash
-sudo hermes-user add probnik                                      # пароль не короче 12 символов
-sudo grep -q '@' /home/hermes-probnik/.hermes/config.yaml   && echo 'ПЛОХО: плейсхолдеры не подставлены' || echo 'ок: плейсхолдеры подставлены'
-sudo -iu hermes-probnik hermes-run -z "Ответь одним словом: работает"   # ждём ответ модели
-sudo hermes-user purge probnik                                    # убрать за собой
+sudo hermes-user add testuser                                      # пароль не короче 12 символов
+sudo grep -q '@' /home/hermes-testuser/.hermes/config.yaml   && echo 'ПЛОХО: плейсхолдеры не подставлены' || echo 'ок: плейсхолдеры подставлены'
+sudo -iu hermes-testuser hermes-run -z "Ответь одним словом: работает"   # ждём ответ модели
+sudo hermes-user purge testuser                                    # убрать за собой
 ```
 
 Если тестовый пользователь отвечает без ручных правок, заведение сотрудника сводится к одной команде.
@@ -271,7 +271,7 @@ sudo -iu hermes-ivanov cat /home/hermes-agent/.hermes/config.yaml               
 Пример полученного маршрута (сентябрь 2026):
 
 ```
-https://hermes_agent_drospr.bc-dev2.int.gazprombank.ru  →  http://<IP контейнера>:9121
+https://hermes.<домен-сервиса>  →  http://<IP контейнера>:9121
 ```
 
 HTTPS терминирует корпоративный прокси, внутрь идёт обычный HTTP — сертификат в контейнере не нужен.
@@ -305,8 +305,8 @@ map $remote_user $hermes_port {
 }
 
 server {
-    listen 192.168.1.15:9121;              # адрес контейнера, на него смотрит корпоративный прокси
-    server_name hermes_agent_drospr.bc-dev2.int.gazprombank.ru;
+    listen <IP-контейнера>:9121;              # адрес контейнера, на него смотрит корпоративный прокси
+    server_name hermes.<домен-сервиса>;
 
     auth_basic           "Hermes";         # сначала логин и пароль
     auth_basic_user_file /etc/nginx/hermes.htpasswd;
@@ -354,11 +354,11 @@ server {
 ### 10.4. Включение: последовательность ✅
 
 Порядок важен: сначала экземпляр освобождает опубликованный порт, затем на него встаёт nginx.
-Пример для контейнера с адресом `192.168.1.15`, опубликован порт 9121, первый пользователь — `agent`.
+Пример для контейнера с адресом `<IP-контейнера>`, опубликован порт 9121, первый пользователь — `agent`.
 
 ```bash
 # 0) адрес контейнера — он должен совпадать с тем, куда направлен корпоративный прокси
-ip -4 addr show | grep inet                                             # ждём адрес вида 192.168.1.15
+ip -4 addr show | grep inet                                             # ждём адрес вида <IP-контейнера>
 
 # 1) экземпляр пользователя переезжает с опубликованного порта на внутренний
 cat /etc/hermes/users/agent.conf                                        # что сейчас
