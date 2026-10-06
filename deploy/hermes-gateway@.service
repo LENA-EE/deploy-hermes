@@ -16,13 +16,14 @@ User=hermes-%i
 Group=hermes-%i
 # Общий срез: лимиты считаются на всех пользователей сразу
 Slice=hermes.slice
-# Обязательно: пакет не установлен в окружение, запуск идёт из каталога установки
-WorkingDirectory=/opt/hermes
+# Рабочая папка пользователя, как у дашборда: код находится через hermes-code.pth в окружении
+WorkingDirectory=/srv/hermes/%i
 # Замки, база задач и конфигурация лежат в ~/.hermes — путь задаём явно
 Environment=HOME=/home/hermes-%i
 
-# Шлюз работает в переднем плане — systemd сам следит за процессом
-ExecStart=/opt/hermes/venv/bin/python -m hermes_cli.main gateway
+# Шлюз работает в переднем плане — systemd сам следит за процессом.
+# Через обёртку: она берёт Python, node и HERMES_HOME из /etc/hermes/hermes.env, как у дашборда
+ExecStart=/usr/local/bin/hermes-run gateway
 
 # always, а не on-failure: штатный выход кодом 0 иначе не перезапускается
 # и задачи по расписанию тихо перестают срабатывать
