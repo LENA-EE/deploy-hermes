@@ -101,7 +101,7 @@
        │                                             │
        │ пишет                                       │ пишет
        ▼                                             ▼
- /srv/hermes/shared/notes/perl            /srv/hermes/shared/notes/react
+ /srv/hermes/shared/notes/audit-perl      /srv/hermes/shared/notes/audit-react
        │                                             │
        │ ◄──────── читает (только чтение) ───────────┘
        └────────── читает (только чтение) ──────────►
@@ -154,16 +154,20 @@
 sudo hermes-user add audit-perl
 sudo hermes-user add audit-react
 
-# Общие каталоги. Владелец копии кода — root: ни одна учётка не может её испортить.
-sudo install -d -m 2750 -o root -g hermes-audit /srv/hermes/shared
-sudo install -d -m 2750 -o root -g hermes-audit /srv/hermes/shared/repo
+# Группа — до того, как её использует install: иначе «invalid group».
 sudo groupadd -f hermes-audit
 sudo usermod -aG hermes-audit hermes-audit-perl
 sudo usermod -aG hermes-audit hermes-audit-react
 
-# Каталоги обмена: пишет владелец, читает второй участник.
-sudo install -d -m 2750 -o hermes-audit-perl  -g hermes-audit /srv/hermes/shared/notes/perl
-sudo install -d -m 2750 -o hermes-audit-react -g hermes-audit /srv/hermes/shared/notes/react
+# Общие каталоги. Владелец копии кода — root: ни одна учётка не может её испортить.
+# 2750: root пишет, группа читает, остальные не входят; бит 2 — новые файлы получают группу каталога.
+sudo install -d -m 2750 -o root -g hermes-audit /srv/hermes/shared
+sudo install -d -m 2750 -o root -g hermes-audit /srv/hermes/shared/repo
+sudo install -d -m 2750 -o root -g hermes-audit /srv/hermes/shared/notes
+
+# Каталоги обмена — по ПОЛНОМУ имени экземпляра (как в юните): пишет владелец, читает сосед.
+sudo install -d -m 2750 -o hermes-audit-perl  -g hermes-audit /srv/hermes/shared/notes/audit-perl
+sudo install -d -m 2750 -o hermes-audit-react -g hermes-audit /srv/hermes/shared/notes/audit-react
 
 # Распаковка среза: без сохранения чужих прав, затем нормализация.
 sudo tar --no-same-permissions --no-same-owner -xzf ~/srez.tar.gz -C /srv/hermes/shared/repo
@@ -180,20 +184,72 @@ sudo find /srv/hermes/shared/repo -type l -lname '/*' -print
 то, что подключено явно. Поэтому **`ReadOnlyPaths` не подойдёт** — каталог просто не появится.
 Нужна `BindReadOnlyPaths`: она и показывает каталог, и запрещает запись.
 
+Дополнение кладётся **в каталог конкретного экземпляра**, а не шаблона. Файл в
+`hermes-dashboard@.service.d/` применился бы ко всем пользователям: права группы их всё равно
+не пустили бы, но первый рубеж — «каталога просто нет» — пропал бы.
+
+Каждый каталог подключается **отдельно, без вложенности**: свой на запись, соседский и копия
+кода на чтение. Вариант «вся `notes` на чтение, а внутри своя на запись» зависит от порядка
+монтирования в systemd — на него не полагаемся. Свой каталог повторяется в `ReadWritePaths`
+так же, как в основном юните: иначе `ProtectSystem=strict` оставит его только на чтение.
+
+Файл `/etc/systemd/system/hermes-dashboard@audit-perl.service.d/audit.conf`:
+
 ```ini
-# Дополнение к hermes-dashboard@.service для учёток аудита
-# (комментарии — только отдельными строками, иначе systemd молча всё отбросит)
+[Service]
+# Комментарии — только отдельными строками, иначе systemd молча всё отбросит.
+# Копия кода — на чтение
 BindReadOnlyPaths=/srv/hermes/shared/repo
-BindReadOnlyPaths=/srv/hermes/shared/notes
-ReadWritePaths=/srv/hermes/shared/notes/%i
+# Свои заметки — на запись
+BindPaths=/srv/hermes/shared/notes/audit-perl
+ReadWritePaths=/srv/hermes/shared/notes/audit-perl
+# Заметки соседа — на чтение
+BindReadOnlyPaths=/srv/hermes/shared/notes/audit-react
+# Новые файлы 640: сосед по группе читает, остальные нет
 UMask=0027
 ```
+
+Для `audit-react` — зеркально: файл `hermes-dashboard@audit-react.service.d/audit.conf`,
+где `audit-perl` и `audit-react` меняются местами.
+
+Файлы удобнее подготовить на своём компьютере и занести по SFTP, затем:
+
+```bash
+sudo install -d -m 755 /etc/systemd/system/hermes-dashboard@audit-perl.service.d \
+                       /etc/systemd/system/hermes-dashboard@audit-react.service.d
+sudo install -m 644 ~/audit-perl.conf  /etc/systemd/system/hermes-dashboard@audit-perl.service.d/audit.conf
+sudo install -m 644 ~/audit-react.conf /etc/systemd/system/hermes-dashboard@audit-react.service.d/audit.conf
+```
+
+Если учёткам аудита понадобятся задачи по расписанию, такое же дополнение нужно
+и шлюзам: `hermes-gateway@audit-perl.service.d/`, `hermes-gateway@audit-react.service.d/`.
 
 После любой правки юнита — обязательно:
 
 ```bash
-sudo systemd-analyze verify hermes-dashboard@audit-perl.service   # ждём пустой вывод
+sudo systemd-analyze verify hermes-dashboard@audit-perl.service    # ждём пустой вывод
+sudo systemd-analyze verify hermes-dashboard@audit-react.service   # ждём пустой вывод
+sudo systemctl daemon-reload
+sudo systemctl restart hermes-dashboard@audit-perl hermes-dashboard@audit-react
 ```
+
+### Проверка границ — до того, как пускать людей
+
+Проверять нужно изнутри песочницы, а не своей учёткой: попросить агента в чате `audit-perl`
+выполнить команды по одной и показать вывод.
+
+| Команда агенту | Ожидаем |
+|---|---|
+| `ls /srv/hermes` | только `audit-perl` и `shared` — чужих папок нет |
+| `ls /srv/hermes/shared/repo` | каталоги среза |
+| `touch /srv/hermes/shared/repo/x` | отказ: только чтение |
+| `echo ok > /srv/hermes/shared/notes/audit-perl/test.md` | успех |
+| `ls -l /srv/hermes/shared/notes/audit-perl/test.md` | `-rw-r-----`, группа `hermes-audit` |
+| `cat /srv/hermes/shared/notes/audit-react/test.md` | читается (после такого же шага у соседа) |
+| `touch /srv/hermes/shared/notes/audit-react/x` | отказ |
+
+То же зеркально из `audit-react`. И у обычного пользователя (например, `probnik`):
+`ls /srv/hermes/shared` должен ответить «нет такого файла или каталога».
 
 ### Индекс рядом с копией
 
@@ -215,9 +271,9 @@ history/changed-18m.txt файлы, менявшиеся за 18 месяцев,
 
 | Учётка | Профиль | Задача | Что читает | Куда пишет |
 |---|---|---|---|---|
-| audit-perl | `perl-audit` | разбор бэкенда: назначение модулей, дефекты, риски | `repo/backend`, `lint`, `history`, `index` | `notes/perl` |
-| audit-perl | `api-contract` | контракт между бэкендом и фронтом | `repo/backend` + `repo/frontend`, `notes/react` | `notes/perl/api` |
-| audit-react | `react-audit` | разбор фронтенда: состояние, структура, устаревшие приёмы | `repo/frontend`, `lint`, `history`, `index` | `notes/react` |
+| audit-perl | `perl-audit` | разбор бэкенда: назначение модулей, дефекты, риски | `repo/backend`, `lint`, `history`, `index` | `notes/audit-perl` |
+| audit-perl | `api-contract` | контракт между бэкендом и фронтом | `repo/backend` + `repo/frontend`, `notes/audit-react` | `notes/audit-perl/api` |
+| audit-react | `react-audit` | разбор фронтенда: состояние, структура, устаревшие приёмы | `repo/frontend`, `lint`, `history`, `index` | `notes/audit-react` |
 
 Контракт API живёт у бэкендера: источник истины по маршрутам — бэкенд, сторона фронта
 извлекается механически (поиск вызовов), результат — таблица «ручки × вызовы × расхождения»,
@@ -272,6 +328,9 @@ history/changed-18m.txt файлы, менявшиеся за 18 месяцев,
 sudo hermes-user purge audit-perl
 sudo hermes-user purge audit-react
 sudo rm -rf /srv/hermes/shared          # копия кода и каталоги обмена
+sudo rm -rf /etc/systemd/system/hermes-dashboard@audit-{perl,react}.service.d   # дополнения юнитов
+sudo systemctl daemon-reload
+sudo groupdel hermes-audit
 ```
 
 Удаление — действие человека, не агента. Перед ним забрать из `notes/` всё, что нужно
