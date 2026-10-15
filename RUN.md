@@ -148,6 +148,89 @@ sudo hermes-user add ivanov              # вернуть (данные на м�
 Стенды под задачи (`STAND.md`) считаются отдельно: они тяжелее личных экземпляров
 и живут только на время задачи.
 
+## Увеличить лимит памяти пользователю
+
+> **Коротко.** Речь об **оперативной памяти** (ОЗУ). Лимиты по умолчанию: 1500M на дашборд
+> человека, 1G на его шлюз, 5G на всех вместе (`hermes.slice`). Лимита на **диск** нет вовсе.
+> Загрузку файлов до 12 МБ память не ограничивает — ошибку 413 снимает
+> `client_max_body_size` в nginx (`INSTALL.md`, шаг про nginx).
+>
+> Порядок: **проверить → дописать дополнение → проверить юнит → перезапустить → убедиться**.
+> В примерах `ivanov` — подставить имя из `sudo hermes-user list`.
+
+**🎓 Что и зачем.** systemd держит каждого человека в его «клетке» (cgroup) с потолком памяти.
+`MemoryHigh` — мягкий порог: выше него процесс притормаживают. `MemoryMax` — жёсткий: выше него
+процесс убивают (oom-kill), у человека падает дашборд. Шаблон `hermes-dashboard@.service`
+не правим, а кладём рядом **дополнение** (drop-in) — оно перекрывает только нужные строки,
+шаблон остаётся как в репозитории, откат — одной командой.
+
+### 1. Проверить, что лимит действительно мал
+
+```bash
+free -h                                     # сколько ОЗУ у контейнера всего и свободно — от этого зависит, сколько можно дать
+systemctl show hermes.slice -p MemoryMax -p MemoryCurrent     # общий потолок всех агентов и сколько занято сейчас
+systemctl show hermes-dashboard@ivanov -p MemoryHigh -p MemoryMax -p MemoryCurrent -p MemoryPeak -p Result
+#   лимиты человека, текущее и пиковое потребление; Result=oom-kill — процесс убивали за превышение
+sudo journalctl -u hermes-dashboard@ivanov --since -7d --no-pager | grep -i -E 'oom|memory'
+#   были ли за неделю убийства по памяти — подтверждение, что поднимать есть смысл
+```
+
+Если `MemoryPeak` далеко от `MemoryMax` и убийств не было — поднимать незачем, причина в другом.
+
+### 2. Дописать дополнение
+
+Одному человеку (предпочтительно):
+
+```bash
+sudo systemctl edit hermes-dashboard@ivanov   # редактор; создаёт /etc/systemd/system/hermes-dashboard@ivanov.service.d/override.conf
+```
+
+Всем сразу:
+
+```bash
+sudo systemctl edit hermes-dashboard@         # дополнение к шаблону — подействует на все экземпляры
+```
+
+В редакторе, между закомментированными строками вверху, вписать:
+
+```ini
+[Service]
+MemoryHigh=2000M
+MemoryMax=2500M
+```
+
+⚠️ **Никаких комментариев в конце строки** (`MemoryMax=2500M  # ...`) — systemd молча
+отбрасывает такую настройку.
+
+### 3. Проверить и применить
+
+```bash
+sudo systemd-analyze verify hermes-dashboard@ivanov.service   # проверка юнита вместе с дополнением — ждём ПУСТОЙ вывод
+sudo systemctl restart hermes-dashboard@ivanov                # перезапуск с новыми лимитами — у человека обновится страница, переписка сохранится
+systemctl show hermes-dashboard@ivanov -p MemoryHigh -p MemoryMax
+#   ждём MemoryHigh=2097152000 и MemoryMax=2621440000 (2000M и 2500M в байтах), не 1572864000 и не infinity
+```
+
+Если дополнение для всех — перезапустить всех: `sudo systemctl restart 'hermes-dashboard@*'`.
+
+### 4. Общий потолок — только если поднимаешь многим
+
+Личные лимиты всё равно упираются в `hermes.slice`. Контейнеру 8 ГБ, остаток нужен системе,
+nginx и администратору в SSH — поэтому выше 5–5,5G не поднимать. Не хватает — просить
+у администраторов больше памяти контейнеру (см. таблицу порогов выше).
+
+```bash
+sudo systemctl edit hermes.slice           # в [Slice] вписать MemoryHigh= / MemoryMax= — тоже без комментариев в строке
+systemctl show hermes.slice -p MemoryMax   # убедиться, что применилось
+```
+
+### Откат
+
+```bash
+sudo systemctl revert hermes-dashboard@ivanov   # удаляет дополнение — возвращаются лимиты из шаблона (1500M)
+sudo systemctl restart hermes-dashboard@ivanov  # применить
+```
+
 ## Частые вопросы пользователей
 
 | Вопрос | Ответ до обновления | После v0.21.0 |
